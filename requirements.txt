@@ -1,0 +1,4 @@
+sentinelsat==0.13
+geojson==2.4.1
+PyYAML==5.1
+requests==2.22.0

@@ -1,0 +1,119 @@
+---
+# Key: base
+#
+# Points to base directory
+# Query results are stored here
+# Images are stored in $base/img
+
+base: ./
+
+# Key: date
+#
+# Date range constraint for OpenSearch queries
+# Must contain a "from" and a "to" subkey
+# Values must be tagged as "!!timestamp"
+
+date:
+  from: !!timestamp "2017-01-01"
+  to: !!timestamp "2018-03-01"
+
+# Key: timeout
+#
+# Number of seconds to wait for response by DHuS
+# int or float
+timeout: 15
+
+# Key: retry
+#
+# Number of times to retry timed-out connections to DHuS
+# int
+retry: 5
+
+# Key: connections
+#
+# Number of parallel downloads
+# int
+connections: 2
+
+# Key: cloud
+#
+# Upper bound cloud cover percentage
+# Constraint for OpenSearch queries
+# Float between 0.0 and 100.0
+
+cloud: 1.0
+
+# Key: mirrors
+#
+# Contains a collection of Sentinel mirrors
+# Structure should be as follows:
+#   $NAME:
+#     url: $URL
+#     user: $USER
+#     password: $PASSWORD
+# were  $NAME is the name of the mirror
+#       $URL the URL to query
+#       $USER the data hub username
+#       $PASSWORD the data hub password
+
+mirrors:
+  ESA:
+    url: https://scihub.copernicus.eu/dhus
+    user: rpardomeza
+    password: 12c124ccb2
+#  Germany:
+#    url: https://code-de.org/dhus
+#    user: <user>
+#    password: <password>
+#  Norway:
+#    url: https://colhub.met.no
+#    user: <user>
+#    password: <password>
+#  Austria:
+#    url: https://data.sentinel.zamg.ac.at
+#    user: <user>
+#    password: <password>
+#  Greece:
+#    url: https://sentinels.space.noa.gr/dhus
+#    user: <user>
+#    password: <password>
+#  Finland:
+#    url: https://finhub.nsdc.fmi.fi
+#    user: <user>
+#    password: <password>
+#  Italy:
+#    url: https://collaborative.asi.it
+#    user: <user>
+#    password: <password>
+
+# Key: test
+#
+# Sequence of MGRS (UTM) grid tiles for mirror tests
+# For each mirror, test tile availability and download
+# speed is measured an incorporated into a mirror ranking
+
+test:
+  - 31UES # Bruxelles
+  - 32UQD # Berlin
+  - 32VNM # Oslo
+  - 33UWP # Vienna
+  - 34SGH # Athens
+  - 35VLG # Helsinki
+  - 32TQM # Rome
+
+# Key: hdfs
+#
+# Constains information regarding HDFS interface
+# Subkeys:
+#   host: Namenode URL
+#   port: Namenode Port
+#   user: Namenode login user
+#   base: HDFS base directory 
+
+#hdfs:
+#  host: <namenode>
+#  port: <node_port>
+#  user: <node_user>
+#  base: <hdfs_basedir>
+
+...
