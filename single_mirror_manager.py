@@ -14,7 +14,9 @@ from concurrent.futures import (
     as_completed,
 )
 import sys
+from sys import stdout, path
 import argparse
+import logging
 from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
 
 
@@ -27,7 +29,7 @@ class SentinelAPIManager(object):
         url = kwargs.get("url")
 
         if user and password and url:
-            print('all variables for connection available')
+            self.logger.info('Sufficient variables for connection string')
         else:
             raise ValueError('No connection provided')
 
@@ -86,6 +88,14 @@ class SentinelAPIManager(object):
 
     def __init__(self, **kwargs):
 
+        self.logger = logging.getLogger("single-mirror")
+        if not self.logger.handlers:
+            handler = logging.StreamHandler(stdout)
+            formater = logging.Formatter("%(message)s")
+            handler.setFormatter(formater)
+            self.logger.addHandler(handler)
+        self.logger.setLevel(logging.DEBUG)
+
         self.config = {}
 
         # get config params
@@ -104,10 +114,10 @@ class SentinelAPIManager(object):
         # self._connect()
         self._connect_hard(kwargs.get("user"), kwargs.get("password"), kwargs.get("url"))
 
-        print('revision point')
 
     def _connect_hard(self, user, password, url):
 
+        self.logger.info('Connecting to ' + url + ' as ' + user)
         with ThreadPoolExecutor() as executor:
             futures = {
                 executor.submit(self.hard_connection, user, password, url)
@@ -134,10 +144,9 @@ class SentinelAPIManager(object):
             return (api, count)
 
         except (SentinelAPIError, RequestException) as err:
-            print(err)
-        #     self.logger.info(
-        #         "Request to mirror '%s' raised '%s'", name, err.__class__.__name__
-        #     )
+            self.logger.info(
+                "Request to mirror '%s' raised '%s'", url, err.__class__.__name__
+            )
         #     for trial in range(self.config["retry"]):
         #         try:
         #             self.logger.info(
@@ -165,9 +174,6 @@ class SentinelAPIManager(object):
 
 
 def parse_args(args):
-    print('printing')
-    print(args)
-    print('printed')
 
     parser = argparse.ArgumentParser(
         description="Single mirror parallel download"
@@ -181,13 +187,20 @@ def parse_args(args):
 
 
 def main():
+
     # Argument as dictionary
-    args = vars(parse_args(sys.argv[1:]))
-    print(args.keys())
+    cmd_args = vars(parse_args(sys.argv[1:]))
+    print('\nArguments!:')
+    for pair in cmd_args:
+        if cmd_args.get(pair):
+            print(pair + ': ' + cmd_args.get(pair))
+        else:
+            print(pair + ' not assigned')
+    print('\n')
 
     # API connection to Sentinel as object
     manager = SentinelAPIManager(
-        user=args.get('user'), password=args.get('password'), hard_mirror='Invoked', url=args.get('url'),
+        user=cmd_args.get('user'), password=cmd_args.get('password'), url=cmd_args.get('url'),
         cloud=None, platformname=2, producttype='S2MSI1C'
     )
 
