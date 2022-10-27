@@ -69,14 +69,14 @@ mirrors:
 #    url: https://colhub.met.no
 #    user: <user>
 #    password: <password>
-#  Austria:
-#    url: https://data.sentinel.zamg.ac.at
-#    user: <user>
-#    password: <password>
-#  Greece:
-#    url: https://sentinels.space.noa.gr/dhus
-#    user: <user>
-#    password: <password>
+  Austria:
+    url: https://data.sentinel.zamg.ac.at
+    user: austria_rpardomeza
+    password: 12c124ccb2
+  Greece:
+    url: https://sentinels.space.noa.gr/dhus
+    user: greecerpardomeza
+    password: 12c124ccb2
 #  Finland:
 #    url: https://finhub.nsdc.fmi.fi
 #    user: <user>
