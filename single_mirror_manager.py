@@ -18,6 +18,7 @@ from sys import stdout, path
 import argparse
 import logging
 from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
+from query import Query
 
 
 class SentinelAPIManager(object):
@@ -114,10 +115,9 @@ class SentinelAPIManager(object):
         # self._connect()
         self._connect_hard(kwargs.get("user"), kwargs.get("password"), kwargs.get("url"))
 
-
     def _connect_hard(self, user, password, url):
 
-        self.logger.info('Connecting to ' + url + ' as ' + user)
+        self.logger.info('Connecting to ' + url + ' as ' + user + '\n')
         with ThreadPoolExecutor() as executor:
             futures = {
                 executor.submit(self.hard_connection, user, password, url)
@@ -203,6 +203,8 @@ def main():
         user=cmd_args.get('user'), password=cmd_args.get('password'), url=cmd_args.get('url'),
         cloud=None, platformname=2, producttype='S2MSI1C'
     )
+
+    que = Query(api=manager.api['mirror'], order='33UUU,33UVT')
 
 
 if __name__ == "__main__":
