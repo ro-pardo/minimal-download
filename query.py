@@ -21,6 +21,7 @@ from requests.exceptions import RequestException
 from product_download import ProductDownload
 import zipfile
 from download_state import DownloadState
+from utils import get_year_season_selection
 
 def _match_year(x):
     """Match Year string
@@ -163,6 +164,45 @@ def unzip(fpath, dest="."):
 
 class Query(object):
 
+    def down_a_level(self, meta):
+        short_meta = OrderedDict()
+        for idx, tile in enumerate(meta, start=1):
+            for id2, mirror_url in enumerate(meta[tile], start=1):
+                if(mirror_url):
+                    short_meta[tile] = meta[tile][mirror_url]
+                    print('putting: ', tile, " : ", meta[tile][mirror_url])
+                # short_meta.update({tile, meta[tile][mirror_url]})
+
+        return short_meta
+
+
+    def select(self, meta):
+        selection = {}
+        self.logger.info("Starting product selection")
+        tic = perf_counter()
+        self.logger.info("Starting product selection")
+        tic = perf_counter()
+        for idx, tile in enumerate(meta, start=1):
+            self.logger.info("\nMGRS %s:", tile)
+            if not meta[tile]:
+                self.logger.info("Nothing to select")
+                continue
+            selection[tile] = get_year_season_selection(meta[tile])
+            for year in selection[tile]:
+                self.logger.info("")
+                self.logger.info("    YEAR: %d", year)
+                self.logger.info("    ----------")
+                for season in selection[tile][year]:
+                    if not selection[tile][year][season]:
+                        self.logger.info("    %s: NONE", season.upper())
+                        continue
+                    uuid = selection[tile][year][season]
+                    cloud = meta[tile][uuid]["cloudcoverpercentage"]
+                    self.logger.info("    %s: %s (%f%%)", season.upper(), uuid, cloud)
+        elapsed = perf_counter() - tic
+        self.logger.info("\nProduct selection completed in %f sec", elapsed)
+        return selection
+
     def unzip_callback(self, future):
         """Unzip a downloaded product
 
@@ -174,7 +214,7 @@ class Query(object):
             Object that the callback was attached to
             Future status is either Done or Canceled
         """
-        download = self.downloads.find(future)
+        download = self._download_list.find(future)
         self.connections -= 1
         try:
             response = future.result()
@@ -299,7 +339,7 @@ class Query(object):
         info = OrderedDict()
 
         # schedule all products
-        download_list = self.downloads
+        download_list = self._download_list
         download_list.clear()
         for idx, uuid in enumerate(uuids, start=1):
             if True:  # self.config["platformname"] == "Sentinel-2":
@@ -352,8 +392,8 @@ class Query(object):
                         download.uuid,
                         download.mirror,
                     )
-                    if len(self.downloads.get_active()) >= self.parallel:
-                        self.downloads.wait_for_completed()
+                    if len(self._download_list.get_active()) >= self.parallel:
+                        self._download_list.wait_for_completed()
                 sleep(2)
             self.logger.info("")
             for future in as_completed(self._proc_futures):
@@ -370,7 +410,7 @@ class Query(object):
         num_failed = len(download_list.get_failed())
         if num_failed > 0:
             self.logger.info("Failed: %d / %d", num_failed, num_products)
-        self.downloads.clear()
+        self._download_list.clear()
         self.logger.info("Shutting down processor pool. This might take some time..")
         self._proc_executor.shutdown()
 
@@ -382,28 +422,28 @@ class Query(object):
         query_kwargs = {'platformname': 'Sentinel-2', 'producttype': 'S2MSI1C', 'date': ('NOW-14DAYS', 'NOW'),
                         'tileid': kwargs.get('tileid')}
         try:
-            sentinel_response = api.query(**kwargs)
-            # sentinel_response = api.query(**query_kwargs)
+            # sentinel_response = api.query(**kwargs)
+            sentinel_response = api.query(**query_kwargs)
             return sentinel_response
         except (RequestException, SentinelAPIError) as err:
             self.logger.info(
                 "Request to mirror '%s' raised '%s'", 'Greece API', err.__class__.__name__
             )
-            for trial in range(retry):
-                try:
-                    self.logger.info(
-                        "Trying again '%s' [%d/%d] ...", 'Greece API', trial + 1, retry
-                    )
-                    return api.query(**kwargs)
-                except (RequestException, SentinelAPIError) as err:
-                    self.logger.info(
-                        "Request to mirror '%s' raised '%s'",
-                        'Greece API',
-                        err.__class__.__name__,
-                    )
-                    sleep(1)
-                    continue
-            self.logger.error("Unable to query mirror '%s'", 'Greece API')
+            # for trial in range(retry):
+            #     try:
+            #         self.logger.info(
+            #             "Trying again '%s' [%d/%d] ...", 'Greece API', trial + 1, retry
+            #         )
+            #         return api.query(**kwargs)
+            #     except (RequestException, SentinelAPIError) as err:
+            #         self.logger.info(
+            #             "Request to mirror '%s' raised '%s'",
+            #             'Greece API',
+            #             err.__class__.__name__,
+            #         )
+            #         sleep(1)
+            #         continue
+            # self.logger.error("Unable to query mirror '%s'", 'Greece API')
             return None
 
     # Wrap SentinelAPI query method
@@ -418,11 +458,12 @@ class Query(object):
             futures = {
                 executor.submit(self._query_thread, **conf_args)
             }
-            i=0
+            # i=0
             for future in as_completed(futures):
-                # name = futures[future]
-                name = 'fake_mirror' + str(i)
-                i = i+1
+                # name = futures[future]        # Original
+                # name = 'fake_mirror' + str(i) # By me
+                name = self.manager.config['mirror']['url']   # New version
+                # i = i+1
                 res = future.result()
                 if res:
                     for uid in res:
@@ -431,16 +472,15 @@ class Query(object):
         return response
 
     def search(self, targets):
-        parallel = self.parallel
         self.logger.info("Starting product search\n")
         tic = perf_counter()
         res = OrderedDict()
         futures = {}
-        with ThreadPoolExecutor(max_workers=parallel) as executor:
+        with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             if isinstance(targets, list):
                 num_targets = len(targets)
                 for idx, target in enumerate(targets, start=1):
-                    print(idx, ': ', target)
+                    print("idx: ", idx, ': ', target)
                     if is_utm(target):
                         print(target, ' is UTM')
                         futures[executor.submit(self.query, tileid=target)] = (
@@ -453,7 +493,7 @@ class Query(object):
                             idx,
                             target,
                         )
-                    if idx % parallel == 0 or idx == num_targets:
+                    if idx % self.parallel == 0 or idx == num_targets:
                         for future in as_completed(futures):
                             _idx, _target = futures[future]
                             response = future.result()
@@ -468,7 +508,7 @@ class Query(object):
                                 )
                             else:
                                 self.logger.info("Footprint: %s\n", target)
-                                if self.config["platformname"] == "Sentinel-2":
+                                if self.manager.config["platformname"] == "Sentinel-2":
                                     utms = order_by_utm(response)
                                     for utm in utms:
                                         res.update({utm: utms[utm]})
@@ -487,6 +527,8 @@ class Query(object):
                                         res.update({uuid: response[uuid]})
                                 self.logger.info("")
                         futures.clear()
+
+            # TODO add cases where only a String is received
         elapsed = perf_counter() - tic
         self.logger.info("\nProduct search completed in %f sec", elapsed)
         return res
@@ -496,16 +538,21 @@ class Query(object):
         """
         fext = path.splitext(fpath)[-1]
         if fext == ".csv":
+            self.logger.info("Detected product as csv")
             tile_ids = load_csv(fpath)
             return self.search(tile_ids)
         elif fext == ".json":
+            self.logger.info("Detected product as json")
             return load_json(fpath)
         elif fext == ".geojson":
+            self.logger.info("Detected product as geojson")
             footprint = geojson_to_wkt(read_geojson(fpath))
             return self.search(footprint)
         elif fext in {".yaml", ".yml"}:
+            self.logger.info("Detected product as yaml")
             return load_yaml(fpath)
         elif not fext and is_utm(fpath):
+            self.logger.info("Detected product as UTM")
             return self.search(fpath.split(","))
         else:
             raise ValueError(
@@ -514,13 +561,18 @@ class Query(object):
             )
 
     def _parse_args(self, **kwargs):
-        self.api = kwargs.get("api")
+        self.manager = kwargs.get("manager")
+        self.api = self.manager.api
         self.order = kwargs.get("order")
-        self.downloads = kwargs.get("downloads")
-        self._proc_executor = kwargs.get("executor")
-        self._proc_futures = kwargs.get("futures")
 
-    def __init__(self, **kwargs):
+        self._download_list = self.manager.download_list
+        self._proc_executor = self.manager.proc_executor
+        self._proc_futures = self.manager.proc_futures
+
+        self.retry = 0
+        self.parallel = 4
+
+    def _logger_init(self):
         self.logger = logging.getLogger("single-mirror")
         if not self.logger.handlers:
             handler = logging.StreamHandler(stdout)
@@ -529,11 +581,7 @@ class Query(object):
             self.logger.addHandler(handler)
         self.logger.setLevel(logging.DEBUG)
 
-        self._parse_args(**kwargs)
-        self.parallel = 2
-        self.retry = 0
-        self.connections = 0
-
+    def _resolve_path(self):
         self.base_dir = os.getcwd()  # self.config["base"]
         self.img_dir = os.path.join(self.base_dir, "images")
         if not os.path.exists(self.img_dir):
@@ -541,14 +589,23 @@ class Query(object):
             self.logger.info("Created %s", self.img_dir)
         self.logger.info("Downloading to %s\n", self.img_dir)
 
+    def __init__(self, **kwargs):
+        self._logger_init()
+        self._parse_args(**kwargs)
+        self._resolve_path()
+
         metadata = self._load_meta(self.order)
         print('metadata')
+        # Has both entries 33UVT & 33UUU
         print(metadata)
         print('\n')
 
-        # selection = self.select(metadata)
-        # print('selection')
-        # print(selection)
-        self.get(metadata)
+
+        short = self.down_a_level(metadata)
+        selection = self.select(short)
+        print('selection')
+        print(selection)
+
+        # self.get(metadata)
 
         print('lets download')

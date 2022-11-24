@@ -54,7 +54,6 @@ class SentinelAPIManager(object):
             self.config["date"]["from"] = from_date
         elif "from" not in self.config["date"]:
             self.config["date"]["from"] = "NOW-356DAY"
-        print("From date defined as: ", self.config["date"]["from"])
         if to_date:
             self.config["date"]["to"] = to_date
         elif "to" not in self.config["date"]:
@@ -88,7 +87,6 @@ class SentinelAPIManager(object):
                 self.config["producttype"] = "S2MSI1C"
             elif self.config["platformname"] == "Sentinel-3":
                 self.config["producttype"] = "SR_1_SRA___"
-        print("lala")
 
     def __init__(self, **kwargs):
 
@@ -129,7 +127,7 @@ class SentinelAPIManager(object):
             for future in as_completed(futures):
                 res = future.result()
                 if res:
-                    self.api['mirror'] = res[0]
+                    self.api = res[0]
                     self.config["mirror"]["num_available"] = res[1]
 
     def hard_connection(self, user, password, url):
@@ -208,8 +206,10 @@ def main():
         cloud=None, platformname=2, producttype='S2MSI1C'
     )
 
-    que = Query(api=manager.api['mirror'], order='33UUU,33UVT', downloads=manager.download_list,
-                executor=manager.proc_executor, futures=manager.proc_futures)
+    query = Query(manager=manager, order='33UUU,33UVT')
+
+    # que = Query(api=manager.api['mirror'], order='33UUU,33UVT', downloads=manager.download_list,
+    #             executor=manager.proc_executor, futures=manager.proc_futures)
 
 
 if __name__ == "__main__":
