@@ -2,6 +2,7 @@ import csv
 import json
 import yaml
 from os import path
+import os
 import datetime
 import re
 from sentinelsat import read_geojson, geojson_to_wkt
@@ -17,7 +18,74 @@ import logging
 from sys import stdout
 from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
 from requests.exceptions import RequestException
+from product_download import ProductDownload
+import zipfile
+from download_state import DownloadState
 
+def _match_year(x):
+    """Match Year string
+    """
+    return bool(re.match("^[0-9]{1,4}$", str(x)))
+
+
+def is_selection(meta):
+    """
+    Return True if parameter "meta" is a nested dict with:
+        - MGRS grid as first key
+        - Year as second key
+        - ["spring", "summer", "autumn", "winter"] as third key
+    """
+    for utm in meta:
+        if not _match_UTM(utm):
+            return False
+        for year in meta[utm]:
+            if not _match_year(year):
+                return False
+            return any(
+                [
+                    season in meta[utm][year]
+                    for season in ["spring", "summer", "autumn", "winter"]
+                ]
+            )
+
+
+def get_keys(meta):
+    """
+    Extract (utm, UUID) pairs from:
+        - ordinary data hub JSON response dict
+        - product selection dict
+    """
+    keys = []
+    selection = is_selection(meta)
+    for utm in meta:
+        for val in meta[utm]:
+            if selection:
+                for season in meta[utm][val]:
+                    keys.append((utm, meta[utm][val][season]))
+            else:
+                keys.append((utm, val))
+    return keys
+
+
+def order_by_utm(response):
+    """Order data hub JSON response by MGRS grid id
+    """
+    utms = {}
+    for uuid in response:
+        if "tileid" in response[uuid]:
+            utm = response[uuid]["tileid"]
+            if utm not in utms:
+                utms[utm] = {}
+            utms[utm].update({uuid: response[uuid]})
+        else:
+            utm = re.search(
+                "_T([0-9]{1,2}[A-Z]{3})_", response[uuid]["filename"]
+            ).groups(1)[0]
+            response[uuid]["tileid"] = utm
+            if utm not in utms:
+                utms[utm] = {}
+            utms[utm].update({uuid: response[uuid]})
+    return utms
 
 def _match_UTM(x):
     return bool(re.match("^[0-9]{1,2}[A-Z]{3}$", x))
@@ -68,7 +136,244 @@ def load_json(fpath):
     return data
 
 
+def unzip(fpath, dest="."):
+    """Unzip file
+
+    Parameters
+    ----------
+    fpath : str
+        Zip file path
+    dest : str
+        Folder to extract to
+
+    Returns
+    -------
+    str
+        Directory of unziped files
+    """
+    print('path', fpath)
+    print(os.path.getsize(fpath))
+
+    with open(fpath, "rb") as f:
+        zf = zipfile.ZipFile(f)
+        out = zf.namelist()[0]
+        zf.extractall(path=dest)
+    return os.path.join(dest, out)
+
+
 class Query(object):
+
+    def unzip_callback(self, future):
+        """Unzip a downloaded product
+
+        Attach this via add_done_callback to a Future object
+
+        Parameters
+        ----------
+        future : concurrent.futures.Future object
+            Object that the callback was attached to
+            Future status is either Done or Canceled
+        """
+        download = self.downloads.find(future)
+        self.connections -= 1
+        try:
+            response = future.result()
+        except Exception as err:
+            self.state = DownloadState.FAILED
+            self.logger.info(
+                "[%d/%d] UUID %s | Download failed",
+                download.index[0],
+                download.index[1],
+                download.uuid,
+            )
+            self.logger.error(str(err))
+            return
+        self.logger.info(
+            "[%d/%d] UUID %s | Download complete (%s) @ %.2f MB/s",
+            download.index[0],
+            download.index[1],
+            download.uuid,
+            download.mirror,
+            download.speed,
+        )
+        print('response')
+        print(response)
+        img_dir = os.path.split(response["path"])[0]
+        _future = self._proc_executor.submit(unzip, response["path"], img_dir)
+        download.state = DownloadState.EXTRACT_ACTIVE
+        fname = response["title"] + ".SAFE"
+        # download.safe_path = os.path.join(img_dir, fname)
+        _future.add_done_callback(download._unzip_callback)
+        self._proc_futures[future] = fname
+
+    def _download_thread(self, mirror, uuid, utm):
+        """Download a Copernicus product
+
+        Parameters
+        ----------
+        mirror : str
+            Mirror name, key in self.config["mirrors"]
+        uuid : str
+            Product UUID
+        utm : str
+            MGRS tile id
+            'None' if platformname not Sentinel-2
+        """
+        retry = self.retry
+        if utm:
+            img_dir = os.path.join(self.img_dir, utm)
+        else:
+            img_dir = self.img_dir
+        if not os.path.exists(img_dir):
+            os.mkdir(img_dir)
+        api = self.api
+        try:
+            return api.download(uuid, img_dir)
+        except (RequestException, SentinelAPIError, InvalidChecksumError) as err:
+            self.logger.info("UUID %s | Raised '%s'", uuid, err.__class__.__name__)
+            for trial in range(retry):
+                try:
+                    self.logger.info(
+                        "UUID %s | Trying again '%s' [%d/%d] ...",
+                        uuid,
+                        mirror,
+                        trial + 1,
+                        retry,
+                    )
+                    return api.download(uuid, img_dir)
+                except (
+                        RequestException,
+                        SentinelAPIError,
+                        InvalidChecksumError,
+                ) as err:
+                    self.logger.info(
+                        "UUID %s | Raised '%s'", uuid, err.__class__.__name__
+                    )
+                    sleep(10)
+                    continue
+            self.logger.error("UUID %s | Unable to download from '%s'", uuid, mirror)
+            return None
+
+    def get(self, meta):
+        """Download and unzip raw data
+
+        Maximize download speed by:
+            - Trying to open as many connections as possible (see "parallel"
+              and "connections" config options)
+            - Always pick the fastest available mirror (given mirrors have
+              been ranked before)
+
+        Files are automatically unziped once a download completes. Unzip jobs
+        are run in parallel via concurrent.futures.ProcessPoolExecutor.
+
+        For Sentinel-2, data is organized as follows:
+
+            $BASE/img/$UTM/$PRODUCT
+
+        where $BASE is the base directory (see config.yaml / -d flag) and
+        where $UTM is the respective MGRS tile ID and
+        where $PRODUCT is the downloaded product zip/SAFE file
+
+        For Sentinel-1 and 3, data is organized as follows:
+
+            $BASE/img/$PRODUCT
+
+        Parameters
+        ----------
+        meta : dict
+            Sentinel-2: Mapping of MGRS tile to query response dict
+            Sentinel-1/3: Mapping of UUID to query response dict
+        """
+        tic = perf_counter()
+        self.logger.info("Starting product download")
+
+        if True:  # self.config["platformname"] == "Sentinel-2":
+            keys = get_keys(meta)
+            uuids = [uuid for utm, uuid in keys]
+            utm_map = {uuid: utm for utm, uuid in keys}
+            retry_map = {uuid: 0 for _, uuid in keys}
+        else:
+            uuids = list(meta.keys())
+            retry_map = {uuid: 0 for uuid in uuids}
+        num_products = len(uuids)
+        info = OrderedDict()
+
+        # schedule all products
+        download_list = self.downloads
+        download_list.clear()
+        for idx, uuid in enumerate(uuids, start=1):
+            if True:  # self.config["platformname"] == "Sentinel-2":
+                utm = utm_map[uuid]
+                download_list.append(ProductDownload(uuid, (idx, num_products), utm))
+            else:
+                download_list.append(ProductDownload(uuid, (idx, num_products)))
+
+        print('Imprimiendo ', len(download_list))
+        for elem in download_list:
+            print(elem)
+
+        with ThreadPoolExecutor(max_workers=self.parallel) as executor:
+            while not download_list.all_downloaded():
+                for download in download_list.get_scheduled():
+                    if not download.state == DownloadState.SCHEDULED:
+                        continue
+
+                    # TODO Used to be the one with more connections available
+                    # download.mirror = self.find_mirror(download.uuid)
+                    download.mirror = self.api
+                    if download.mirror == "NONE":
+                        if retry_map[download.uuid] >= self.retry:
+                            download.state = DownloadState.FAILED
+                            self.logger.info(
+                                "[%d/%d] UUID %s | Download failed, retry limit exceeded",
+                                download.index[0],
+                                num_products,
+                                download.uuid,
+                            )
+                        else:
+                            retry_map[download.uuid] += 1
+                        continue
+                    if download.mirror == "BUSY":
+                        # wait indefinately
+                        continue
+                    future = executor.submit(
+                        self._download_thread,
+                        download.mirror,
+                        download.uuid,
+                        download.utm,
+                    )
+                    self.connections += 1
+                    download.register(future)
+                    future.add_done_callback(self.unzip_callback)
+                    self.logger.info(
+                        "[%d/%d] UUID %s | Download starting (%s)",
+                        download.index[0],
+                        num_products,
+                        download.uuid,
+                        download.mirror,
+                    )
+                    if len(self.downloads.get_active()) >= self.parallel:
+                        self.downloads.wait_for_completed()
+                sleep(2)
+            self.logger.info("")
+            for future in as_completed(self._proc_futures):
+                fname = self._proc_futures[future]
+                try:
+                    self.logger.info("PRODUCT %s [x]", fname)
+                except FileExistsError as err:
+                    self.logger.info("PRODUCT %s [o]", fname)
+            self._proc_futures.clear()
+
+        elapsed = perf_counter() - tic
+        self.logger.info("\nProduct download completed in %f sec", elapsed)
+        self.logger.info("Total size: %s MB", download_list.size())
+        num_failed = len(download_list.get_failed())
+        if num_failed > 0:
+            self.logger.info("Failed: %d / %d", num_failed, num_products)
+        self.downloads.clear()
+        self.logger.info("Shutting down processor pool. This might take some time..")
+        self._proc_executor.shutdown()
+
 
     def _query_thread(self, **kwargs):
         api = self.api
@@ -78,6 +383,7 @@ class Query(object):
                         'tileid': kwargs.get('tileid')}
         try:
             sentinel_response = api.query(**kwargs)
+            # sentinel_response = api.query(**query_kwargs)
             return sentinel_response
         except (RequestException, SentinelAPIError) as err:
             self.logger.info(
@@ -112,14 +418,16 @@ class Query(object):
             futures = {
                 executor.submit(self._query_thread, **conf_args)
             }
+            i=0
             for future in as_completed(futures):
-                print(future.result())
                 # name = futures[future]
-                # res = future.result()
-                # if res:
-                #     for uid in res:
-                #         res[uid]["mirror"] = name
-                #     response[name] = res
+                name = 'fake_mirror' + str(i)
+                i = i+1
+                res = future.result()
+                if res:
+                    for uid in res:
+                        res[uid]["mirror"] = name
+                    response[name] = res
         return response
 
     def search(self, targets):
@@ -161,8 +469,7 @@ class Query(object):
                             else:
                                 self.logger.info("Footprint: %s\n", target)
                                 if self.config["platformname"] == "Sentinel-2":
-                                    # utms = utils.order_by_utm(response)
-                                    utms = []
+                                    utms = order_by_utm(response)
                                     for utm in utms:
                                         res.update({utm: utms[utm]})
                                         self.logger.info(
@@ -180,6 +487,9 @@ class Query(object):
                                         res.update({uuid: response[uuid]})
                                 self.logger.info("")
                         futures.clear()
+        elapsed = perf_counter() - tic
+        self.logger.info("\nProduct search completed in %f sec", elapsed)
+        return res
 
     def _load_meta(self, fpath):
         """Automatically choose a parsing method and return parsed data
@@ -206,6 +516,9 @@ class Query(object):
     def _parse_args(self, **kwargs):
         self.api = kwargs.get("api")
         self.order = kwargs.get("order")
+        self.downloads = kwargs.get("downloads")
+        self._proc_executor = kwargs.get("executor")
+        self._proc_futures = kwargs.get("futures")
 
     def __init__(self, **kwargs):
         self.logger = logging.getLogger("single-mirror")
@@ -218,7 +531,24 @@ class Query(object):
 
         self._parse_args(**kwargs)
         self.parallel = 2
+        self.retry = 0
+        self.connections = 0
 
-        self._load_meta(self.order)
+        self.base_dir = os.getcwd()  # self.config["base"]
+        self.img_dir = os.path.join(self.base_dir, "images")
+        if not os.path.exists(self.img_dir):
+            os.makedirs(self.img_dir)
+            self.logger.info("Created %s", self.img_dir)
+        self.logger.info("Downloading to %s\n", self.img_dir)
+
+        metadata = self._load_meta(self.order)
+        print('metadata')
+        print(metadata)
+        print('\n')
+
+        # selection = self.select(metadata)
+        # print('selection')
+        # print(selection)
+        self.get(metadata)
 
         print('lets download')

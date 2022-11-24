@@ -19,6 +19,7 @@ import argparse
 import logging
 from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
 from query import Query
+from product_download_list import ProductDownloadList
 
 
 class SentinelAPIManager(object):
@@ -53,6 +54,7 @@ class SentinelAPIManager(object):
             self.config["date"]["from"] = from_date
         elif "from" not in self.config["date"]:
             self.config["date"]["from"] = "NOW-356DAY"
+        print("From date defined as: ", self.config["date"]["from"])
         if to_date:
             self.config["date"]["to"] = to_date
         elif "to" not in self.config["date"]:
@@ -86,6 +88,7 @@ class SentinelAPIManager(object):
                 self.config["producttype"] = "S2MSI1C"
             elif self.config["platformname"] == "Sentinel-3":
                 self.config["producttype"] = "SR_1_SRA___"
+        print("lala")
 
     def __init__(self, **kwargs):
 
@@ -106,15 +109,16 @@ class SentinelAPIManager(object):
         self._connections = {'mirror': 0}
 
         # TODO Used to be a ProductDownloadList class
-        self._download_list = []
+        self.download_list = ProductDownloadList()
 
-        self._proc_executor = ProcessPoolExecutor()
-        self._proc_futures = {}
+        self.proc_executor = ProcessPoolExecutor()
+        self.proc_futures = {}
 
         self.api = {}
         # self._connect()
         self._connect_hard(kwargs.get("user"), kwargs.get("password"), kwargs.get("url"))
 
+    # Connects to a specific mirror
     def _connect_hard(self, user, password, url):
 
         self.logger.info('Connecting to ' + url + ' as ' + user + '\n')
@@ -204,7 +208,8 @@ def main():
         cloud=None, platformname=2, producttype='S2MSI1C'
     )
 
-    que = Query(api=manager.api['mirror'], order='33UUU,33UVT')
+    que = Query(api=manager.api['mirror'], order='33UUU,33UVT', downloads=manager.download_list,
+                executor=manager.proc_executor, futures=manager.proc_futures)
 
 
 if __name__ == "__main__":

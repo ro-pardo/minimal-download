@@ -147,6 +147,9 @@ class SentinelAPIManager(object):
             "platformname": self.config["platformname"],
             "producttype": self.config["producttype"],
         }
+        # for mirror in self.config["mirrors"]:
+        #     print(mirror)
+
         with ThreadPoolExecutor() as executor:
             futures = {
                 executor.submit(self._connect_thread, mirror, **args): mirror
@@ -198,6 +201,9 @@ class SentinelAPIManager(object):
         elif "to" not in self.config["date"]:
             self.config["date"]["to"] = "NOW"
 
+        if "hard_mirror" not in self.config:
+            self.config["hard_mirror"] = kwargs.get("hard_mirror")
+
         cloud = kwargs.get("cloud")
         if cloud:
             self.config["cloud"] = cloud
@@ -247,21 +253,38 @@ class SentinelAPIManager(object):
         user = kwargs.get("user")
         password = kwargs.get("password")
         url = kwargs.get("url")
+        # if user:
+        #     self.config["mirrors"] = {}
+        #     self.config["mirrors"]["Custom"] = {}
+        #     self.config["mirrors"]["Custom"]["user"] = user
+        #     if password:
+        #         self.config["mirrors"]["Custom"]["password"] = password
+        #     else:
+        #         password = getpass()
+        #         if not password:
+        #             raise ValueError("Password can not be empty")
+        #         self.config["mirrors"]["Custom"]["password"] = password
+        #     if url:
+        #         self.config["mirrors"]["Custom"]["url"] = url
+        #     else:
+        #         self.config["mirrors"]["Custom"][
+        #             "url"
+        #         ] = "https://scihub.copernicus.eu/dhus"
         if user:
             self.config["mirrors"] = {}
-            self.config["mirrors"]["Custom"] = {}
-            self.config["mirrors"]["Custom"]["user"] = user
+            self.config["mirrors"]["austria"] = {}
+            self.config["mirrors"]["austria"]["user"] = user
             if password:
-                self.config["mirrors"]["Custom"]["password"] = password
+                self.config["mirrors"]["austria"]["password"] = password
             else:
                 password = getpass()
                 if not password:
                     raise ValueError("Password can not be empty")
-                self.config["mirrors"]["Custom"]["password"] = password
+                self.config["mirrors"]["austria"]["password"] = password
             if url:
-                self.config["mirrors"]["Custom"]["url"] = url
+                self.config["mirrors"]["austria"]["url"] = url
             else:
-                self.config["mirrors"]["Custom"][
+                self.config["mirrors"]["austria"][
                     "url"
                 ] = "https://scihub.copernicus.eu/dhus"
 
@@ -278,6 +301,8 @@ class SentinelAPIManager(object):
         self._parse_args(**kwargs)
 
         self._connections = {name: 0 for name in self.config["mirrors"]}
+        # self._connections = []
+        # self._connections.append(self.config["mirror_hard"])
 
         # TODO Used to be a ProductDownloadList class
         self._download_list = []
@@ -286,7 +311,67 @@ class SentinelAPIManager(object):
         self._proc_futures = {}
 
         self.api = {}
-        self._connect()
+        # self._connect()
+        self._connect_hard(kwargs.get("user"), kwargs.get("password"), kwargs.get("url"))
+
+    def _connect_hard(self, user, password, url):
+
+        with ThreadPoolExecutor() as executor:
+            futures = {
+                executor.submit(self.hard_connection, 'austria', user, password, url)
+            }
+            for future in as_completed(futures):
+                # mirror = futures[future]
+                # print("mirror")
+                # print(mirror)
+                res = future.result()
+                if res:
+                    self.api['austria'] = res[0]
+                    self.config["mirrors"]['austria']["num_available"] = res[1]
+
+    def hard_connection(self, name, user, password, url):
+        global args
+        try:
+            args = {
+                "date": (self.config["date"]["from"], self.config["date"]["to"]),
+                "cloudcoverpercentage": (0, self.config["cloud"]),
+                "platformname": self.config["platformname"],
+                "producttype": self.config["producttype"],
+            }
+            api = SentinelAPI(
+                user, password, api_url=url, show_progressbars=False, timeout=self.config["timeout"]
+            )
+            count = api.count(**args)
+            return (api, count)
+
+        except (SentinelAPIError, RequestException) as err:
+            self.logger.info(
+                "Request to mirror '%s' raised '%s'", name, err.__class__.__name__
+            )
+            for trial in range(self.config["retry"]):
+                try:
+                    self.logger.info(
+                        "Trying again [%d/%d] ...", trial + 1, self.config["retry"]
+                    )
+                    api = SentinelAPI(
+                        user,
+                        password,
+                        api_url=url,
+                        show_progressbars=False,
+                        timeout=self.config["timeout"],
+                    )
+                    count = api.count(**args)
+                except (SentinelAPIError, RequestException) as err:
+                    self.logger.info(
+                        "Request to mirror '%s' raised '%s'",
+                        name,
+                        err.__class__.__name__,
+                    )
+                    sleep(1)
+                    continue
+                else:
+                    return (api, count)
+            return None
 
 
 # Press the green button in the gutter to run the script.
@@ -294,6 +379,8 @@ if __name__ == '__main__':
     print_hi('PyCharm')
 
     manager = SentinelAPIManager(
-        user='rpardomeza', password='12c124ccb2', cloud=None, platformname=2, producttype='S2MSI1C'
+        user='greecerpardomeza', password='12c124ccb2', hard_mirror='ESA', url="https://sentinels.space.noa.gr/dhus",
+        # user='rpardomeza', password='12c124ccb2', hard_mirror='ESA', url="https://scihub.copernicus.eu/dhus",
+        cloud=None, platformname=2, producttype='S2MSI1C'
     )
     print(manager)
