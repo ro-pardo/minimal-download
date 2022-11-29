@@ -1,5 +1,7 @@
 import csv
 import json
+import sys
+
 import yaml
 from os import path
 import os
@@ -215,7 +217,8 @@ class Query(object):
             Future status is either Done or Canceled
         """
         download = self._download_list.find(future)
-        self.connections -= 1
+        # TODO What will we do with the connections var
+        # self.connections -= 1
         try:
             response = future.result()
         except Exception as err:
@@ -327,7 +330,7 @@ class Query(object):
         tic = perf_counter()
         self.logger.info("Starting product download")
 
-        if True:  # self.config["platformname"] == "Sentinel-2":
+        if self.manager.config["platformname"] == "Sentinel-2":
             keys = get_keys(meta)
             uuids = [uuid for utm, uuid in keys]
             utm_map = {uuid: utm for utm, uuid in keys}
@@ -342,7 +345,7 @@ class Query(object):
         download_list = self._download_list
         download_list.clear()
         for idx, uuid in enumerate(uuids, start=1):
-            if True:  # self.config["platformname"] == "Sentinel-2":
+            if self.manager.config["platformname"] == "Sentinel-2":
                 utm = utm_map[uuid]
                 download_list.append(ProductDownload(uuid, (idx, num_products), utm))
             else:
@@ -350,7 +353,10 @@ class Query(object):
 
         print('Imprimiendo ', len(download_list))
         for elem in download_list:
+            print("START ELEM")
             print(elem)
+            print("END ELEM")
+        # sys.exit()
 
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
             while not download_list.all_downloaded():
@@ -359,30 +365,31 @@ class Query(object):
                         continue
 
                     # TODO Used to be the one with more connections available
+                    download.mirror = 'NOT USE THIS'
                     # download.mirror = self.find_mirror(download.uuid)
-                    download.mirror = self.api
-                    if download.mirror == "NONE":
-                        if retry_map[download.uuid] >= self.retry:
-                            download.state = DownloadState.FAILED
-                            self.logger.info(
-                                "[%d/%d] UUID %s | Download failed, retry limit exceeded",
-                                download.index[0],
-                                num_products,
-                                download.uuid,
-                            )
-                        else:
-                            retry_map[download.uuid] += 1
-                        continue
-                    if download.mirror == "BUSY":
-                        # wait indefinately
-                        continue
+                    # download.mirror = self.api
+                    # if download.mirror == "NONE":
+                    #     if retry_map[download.uuid] >= self.retry:
+                    #         download.state = DownloadState.FAILED
+                    #         self.logger.info(
+                    #             "[%d/%d] UUID %s | Download failed, retry limit exceeded",
+                    #             download.index[0],
+                    #             num_products,
+                    #             download.uuid,
+                    #         )
+                    #     else:
+                    #         retry_map[download.uuid] += 1
+                    #     continue
+                    # if download.mirror == "BUSY":
+                    #     # wait indefinately
+                    #     continue
                     future = executor.submit(
                         self._download_thread,
                         download.mirror,
                         download.uuid,
                         download.utm,
                     )
-                    self.connections += 1
+                    # self.connections += 1
                     download.register(future)
                     future.add_done_callback(self.unzip_callback)
                     self.logger.info(
@@ -606,6 +613,5 @@ class Query(object):
         print('selection')
         print(selection)
 
-        # self.get(metadata)
-
         print('lets download')
+        self.get(selection)
