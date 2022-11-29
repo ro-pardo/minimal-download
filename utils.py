@@ -1,5 +1,11 @@
+import csv
+import json
+import os
+import yaml
 import datetime
+import re
 from collections import Counter
+import zipfile
 
 def get_season_year(idate):
     """From a given JSON response get Year and Season
@@ -113,3 +119,141 @@ def get_year_season_selection(meta):
             best = rank.most_common(1)[0][0]
             selection[year].update({season: best})
     return selection
+
+def _match_year(x):
+    """Match Year string
+    """
+    return bool(re.match("^[0-9]{1,4}$", str(x)))
+
+
+def is_selection(meta):
+    """
+    Return True if parameter "meta" is a nested dict with:
+        - MGRS grid as first key
+        - Year as second key
+        - ["spring", "summer", "autumn", "winter"] as third key
+    """
+    for utm in meta:
+        if not _match_UTM(utm):
+            return False
+        for year in meta[utm]:
+            if not _match_year(year):
+                return False
+            return any(
+                [
+                    season in meta[utm][year]
+                    for season in ["spring", "summer", "autumn", "winter"]
+                ]
+            )
+
+
+def get_keys(meta):
+    """
+    Extract (utm, UUID) pairs from:
+        - ordinary data hub JSON response dict
+        - product selection dict
+    """
+    keys = []
+    selection = is_selection(meta)
+    for utm in meta:
+        for val in meta[utm]:
+            if selection:
+                for season in meta[utm][val]:
+                    keys.append((utm, meta[utm][val][season]))
+            else:
+                keys.append((utm, val))
+    return keys
+
+
+def order_by_utm(response):
+    """Order data hub JSON response by MGRS grid id
+    """
+    utms = {}
+    for uuid in response:
+        if "tileid" in response[uuid]:
+            utm = response[uuid]["tileid"]
+            if utm not in utms:
+                utms[utm] = {}
+            utms[utm].update({uuid: response[uuid]})
+        else:
+            utm = re.search(
+                "_T([0-9]{1,2}[A-Z]{3})_", response[uuid]["filename"]
+            ).groups(1)[0]
+            response[uuid]["tileid"] = utm
+            if utm not in utms:
+                utms[utm] = {}
+            utms[utm].update({uuid: response[uuid]})
+    return utms
+
+def _match_UTM(x):
+    return bool(re.match("^[0-9]{1,2}[A-Z]{3}$", x))
+
+
+def datetime_parser(dct):
+    """JSON datetime parser
+    """
+    for k, v in list(dct.items()):
+        if isinstance(v, str) and re.search("[0-9]{4}-[0-9]{1,2}-[0-9]{2} ", v):
+            try:
+                dct[k] = datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S.%f")
+            except:
+                try:
+                    dct[k] = datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
+                except:
+                    pass
+    return dct
+
+
+def is_utm(string):
+    return all(list(map(_match_UTM, string.split(","))))
+
+
+# Load YAML file to dict
+def load_yaml(fpath):
+    with open(fpath, "r") as f:
+        data = yaml.safe_load(f)
+    return data
+
+
+# Load first column of a CSV file
+def load_csv(fpath, skip_header=True):
+    with open(fpath, "r") as f:
+        reader = csv.reader(f)
+        ids = []
+        if skip_header:
+            next(reader, None)
+        for row in reader:
+            ids.append(row[0])
+    return ids
+
+
+# Load JSON file, cast dates to datetime values
+def load_json(fpath):
+    with open(fpath, "rb") as f:
+        data = json.load(f, object_hook=datetime_parser)
+    return data
+
+
+def unzip(fpath, dest="."):
+    """Unzip file
+
+    Parameters
+    ----------
+    fpath : str
+        Zip file path
+    dest : str
+        Folder to extract to
+
+    Returns
+    -------
+    str
+        Directory of unziped files
+    """
+    print('path', fpath)
+    print(os.path.getsize(fpath))
+
+    with open(fpath, "rb") as f:
+        zf = zipfile.ZipFile(f)
+        out = zf.namelist()[0]
+        zf.extractall(path=dest)
+    return os.path.join(dest, out)

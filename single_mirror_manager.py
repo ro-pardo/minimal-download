@@ -1,23 +1,14 @@
-import yaml
-import csv
-import json
-from os import path, mkdir
 from requests.exceptions import RequestException
-from time import sleep
-import getpass
-import re
-import datetime
 from concurrent.futures import (
     ThreadPoolExecutor,
     ProcessPoolExecutor,
-    wait,
     as_completed,
 )
 import sys
-from sys import stdout, path
+from sys import stdout
 import argparse
 import logging
-from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
+from sentinelsat import SentinelAPI, SentinelAPIError
 from query import Query
 from product_download_list import ProductDownloadList
 
@@ -40,14 +31,18 @@ class SentinelAPIManager(object):
         self.config["mirror"]["password"] = password
         self.config["mirror"]["url"] = url
 
+        order = kwargs.get("order")
+        if order:
+            self.config["order"] = order
+
         cloud = kwargs.get("cloud")
         if cloud:
             self.config["cloud"] = cloud
         elif "cloud" not in self.config:
             self.config["cloud"] = 10.0
 
-        from_date = kwargs.get("from")
-        to_date = kwargs.get("to")
+        from_date = kwargs.get("from_date")
+        to_date = kwargs.get("to_date")
         if "date" not in self.config:
             self.config["date"] = {}
         if from_date:
@@ -184,32 +179,44 @@ def parse_args(args):
     parser.add_argument("--password", help="Datahub password", type=str)
     parser.add_argument("--url", help="Datahub URL", type=str)
     parser.add_argument("--timeout", help="DHuS mirror timeout", type=float)
+    parser.add_argument("--from", help="DHuS Initial Date", type=str)
+    parser.add_argument("--to", help="DHuS End Date", type=str)
+    parser.add_argument("--order", help="DHuS Order Identifier", type=str)
 
     return parser.parse_args(args)
 
+
+# Tile IDs to try
+# 33UUU     # Initial Example
+# 33UVT     # Initial Example
+# "31UES",  # Bruxelles
+# "32UQD",  # Berlin
+# "32VNM",  # Oslo
+# "33UWP",  # Vienna
+# "34SGH",  # Athens
+# "35VLG",  # Helsinki
+# "32TQM",  # Rome
 
 def main():
 
     # Argument as dictionary
     cmd_args = vars(parse_args(sys.argv[1:]))
-    print('\nArguments!:')
+    print('\nArguments:')
     for pair in cmd_args:
         if cmd_args.get(pair):
             print(pair + ': ' + cmd_args.get(pair))
         else:
             print(pair + ' not assigned')
-    print('\n')
 
     # API connection to Sentinel as object
     manager = SentinelAPIManager(
         user=cmd_args.get('user'), password=cmd_args.get('password'), url=cmd_args.get('url'),
         cloud=None, platformname=2, producttype='S2MSI1C'
+        , from_date=cmd_args.get('from'), to_date=cmd_args.get('to'), order=cmd_args.get('order')
     )
 
-    query = Query(manager=manager, order='33UUU,33UVT')
-
-    # que = Query(api=manager.api['mirror'], order='33UUU,33UVT', downloads=manager.download_list,
-    #             executor=manager.proc_executor, futures=manager.proc_futures)
+    query = Query(manager=manager, order=manager.config["order"])
+    query.execute()
 
 
 if __name__ == "__main__":

@@ -1,167 +1,18 @@
-import csv
-import json
-import sys
-
-import yaml
 from os import path
 import os
-import datetime
-import re
-from sentinelsat import read_geojson, geojson_to_wkt
-from collections import OrderedDict, Counter
+from collections import OrderedDict
 from time import perf_counter, sleep
 from concurrent.futures import (
     ThreadPoolExecutor,
-    ProcessPoolExecutor,
-    wait,
     as_completed,
 )
 import logging
 from sys import stdout
-from sentinelsat import SentinelAPI, InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
+from sentinelsat import InvalidChecksumError, SentinelAPIError, read_geojson, geojson_to_wkt
 from requests.exceptions import RequestException
 from product_download import ProductDownload
-import zipfile
 from download_state import DownloadState
-from utils import get_year_season_selection
-
-def _match_year(x):
-    """Match Year string
-    """
-    return bool(re.match("^[0-9]{1,4}$", str(x)))
-
-
-def is_selection(meta):
-    """
-    Return True if parameter "meta" is a nested dict with:
-        - MGRS grid as first key
-        - Year as second key
-        - ["spring", "summer", "autumn", "winter"] as third key
-    """
-    for utm in meta:
-        if not _match_UTM(utm):
-            return False
-        for year in meta[utm]:
-            if not _match_year(year):
-                return False
-            return any(
-                [
-                    season in meta[utm][year]
-                    for season in ["spring", "summer", "autumn", "winter"]
-                ]
-            )
-
-
-def get_keys(meta):
-    """
-    Extract (utm, UUID) pairs from:
-        - ordinary data hub JSON response dict
-        - product selection dict
-    """
-    keys = []
-    selection = is_selection(meta)
-    for utm in meta:
-        for val in meta[utm]:
-            if selection:
-                for season in meta[utm][val]:
-                    keys.append((utm, meta[utm][val][season]))
-            else:
-                keys.append((utm, val))
-    return keys
-
-
-def order_by_utm(response):
-    """Order data hub JSON response by MGRS grid id
-    """
-    utms = {}
-    for uuid in response:
-        if "tileid" in response[uuid]:
-            utm = response[uuid]["tileid"]
-            if utm not in utms:
-                utms[utm] = {}
-            utms[utm].update({uuid: response[uuid]})
-        else:
-            utm = re.search(
-                "_T([0-9]{1,2}[A-Z]{3})_", response[uuid]["filename"]
-            ).groups(1)[0]
-            response[uuid]["tileid"] = utm
-            if utm not in utms:
-                utms[utm] = {}
-            utms[utm].update({uuid: response[uuid]})
-    return utms
-
-def _match_UTM(x):
-    return bool(re.match("^[0-9]{1,2}[A-Z]{3}$", x))
-
-
-def datetime_parser(dct):
-    """JSON datetime parser
-    """
-    for k, v in list(dct.items()):
-        if isinstance(v, str) and re.search("[0-9]{4}-[0-9]{1,2}-[0-9]{2} ", v):
-            try:
-                dct[k] = datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S.%f")
-            except:
-                try:
-                    dct[k] = datetime.datetime.strptime(v, "%Y-%m-%d %H:%M:%S")
-                except:
-                    pass
-    return dct
-
-
-def is_utm(string):
-    return all(list(map(_match_UTM, string.split(","))))
-
-
-# Load YAML file to dict
-def load_yaml(fpath):
-    with open(fpath, "r") as f:
-        data = yaml.safe_load(f)
-    return data
-
-
-# Load first column of a CSV file
-def load_csv(fpath, skip_header=True):
-    with open(fpath, "r") as f:
-        reader = csv.reader(f)
-        ids = []
-        if skip_header:
-            next(reader, None)
-        for row in reader:
-            ids.append(row[0])
-    return ids
-
-
-# Load JSON file, cast dates to datetime values
-def load_json(fpath):
-    with open(fpath, "rb") as f:
-        data = json.load(f, object_hook=datetime_parser)
-    return data
-
-
-def unzip(fpath, dest="."):
-    """Unzip file
-
-    Parameters
-    ----------
-    fpath : str
-        Zip file path
-    dest : str
-        Folder to extract to
-
-    Returns
-    -------
-    str
-        Directory of unziped files
-    """
-    print('path', fpath)
-    print(os.path.getsize(fpath))
-
-    with open(fpath, "rb") as f:
-        zf = zipfile.ZipFile(f)
-        out = zf.namelist()[0]
-        zf.extractall(path=dest)
-    return os.path.join(dest, out)
+from utils import get_year_season_selection, unzip, get_keys, is_utm, order_by_utm, load_csv, load_json, load_yaml
 
 
 class Query(object):
@@ -172,15 +23,15 @@ class Query(object):
             for id2, mirror_url in enumerate(meta[tile], start=1):
                 if(mirror_url):
                     short_meta[tile] = meta[tile][mirror_url]
-                    print('putting: ', tile, " : ", meta[tile][mirror_url])
+                    # print('putting: ', tile, " : ", meta[tile][mirror_url])
                 # short_meta.update({tile, meta[tile][mirror_url]})
 
         return short_meta
 
 
     def select(self, meta):
+
         selection = {}
-        self.logger.info("Starting product selection")
         tic = perf_counter()
         self.logger.info("Starting product selection")
         tic = perf_counter()
@@ -239,8 +90,8 @@ class Query(object):
             download.mirror,
             download.speed,
         )
-        print('response')
-        print(response)
+        # print('response')
+        # print(response)
         img_dir = os.path.split(response["path"])[0]
         _future = self._proc_executor.submit(unzip, response["path"], img_dir)
         download.state = DownloadState.EXTRACT_ACTIVE
@@ -351,11 +202,10 @@ class Query(object):
             else:
                 download_list.append(ProductDownload(uuid, (idx, num_products)))
 
-        print('Imprimiendo ', len(download_list))
-        for elem in download_list:
-            print("START ELEM")
-            print(elem)
-            print("END ELEM")
+        # for elem in download_list:
+        #     print("START ELEM")
+        #     print(elem)
+        #     print("END ELEM")
         # sys.exit()
 
         with ThreadPoolExecutor(max_workers=self.parallel) as executor:
@@ -421,16 +271,12 @@ class Query(object):
         self.logger.info("Shutting down processor pool. This might take some time..")
         self._proc_executor.shutdown()
 
-
     def _query_thread(self, **kwargs):
         api = self.api
         retry = 2
 
-        query_kwargs = {'platformname': 'Sentinel-2', 'producttype': 'S2MSI1C', 'date': ('NOW-14DAYS', 'NOW'),
-                        'tileid': kwargs.get('tileid')}
         try:
-            # sentinel_response = api.query(**kwargs)
-            sentinel_response = api.query(**query_kwargs)
+            sentinel_response = api.query(**kwargs)
             return sentinel_response
         except (RequestException, SentinelAPIError) as err:
             self.logger.info(
@@ -454,23 +300,30 @@ class Query(object):
             return None
 
     # Wrap SentinelAPI query method
-    def query(self, merge=True, ignore_conf=False, **kwargs):
-        for k in kwargs:
-            print(k, ': ', kwargs.get(k))
+    def query(self, ignore_conf=False, **kwargs):
+
         response = OrderedDict()
-        conf_args = kwargs
+
+        if ignore_conf:
+            conf_args = kwargs
+        else:
+            conf_args = {
+                "date": (self.manager.config["date"]["from"], self.manager.config["date"]["to"]),
+                "platformname": self.manager.config["platformname"],
+                "producttype": self.manager.config["producttype"],
+                **kwargs,
+            }
+            if self.manager.config["platformname"] == "Sentinel-2":
+                conf_args["cloudcoverpercentage"] = (0, self.manager.config["cloud"])
+
         self.logger.debug("Querying DHuS")
 
         with ThreadPoolExecutor() as executor:
             futures = {
                 executor.submit(self._query_thread, **conf_args)
             }
-            # i=0
             for future in as_completed(futures):
-                # name = futures[future]        # Original
-                # name = 'fake_mirror' + str(i) # By me
-                name = self.manager.config['mirror']['url']   # New version
-                # i = i+1
+                name = self.manager.config['mirror']['url']
                 res = future.result()
                 if res:
                     for uid in res:
@@ -487,15 +340,14 @@ class Query(object):
             if isinstance(targets, list):
                 num_targets = len(targets)
                 for idx, target in enumerate(targets, start=1):
-                    print("idx: ", idx, ': ', target)
                     if is_utm(target):
-                        print(target, ' is UTM')
+                        # print(target, ' is UTM')
                         futures[executor.submit(self.query, tileid=target)] = (
                             idx,
                             target,
                         )
                     else:
-                        print(target, ' is something else')
+                        print(target, ' is an Area')
                         futures[executor.submit(self.query, area=target)] = (
                             idx,
                             target,
@@ -594,24 +446,27 @@ class Query(object):
         if not os.path.exists(self.img_dir):
             os.makedirs(self.img_dir)
             self.logger.info("Created %s", self.img_dir)
-        self.logger.info("Downloading to %s\n", self.img_dir)
+        self.logger.info("Application download path: %s\n", self.img_dir)
 
     def __init__(self, **kwargs):
         self._logger_init()
         self._parse_args(**kwargs)
         self._resolve_path()
 
-        metadata = self._load_meta(self.order)
-        print('metadata')
-        # Has both entries 33UVT & 33UUU
-        print(metadata)
-        print('\n')
+    def execute(self):
 
+        self.logger.debug("Getting the metadata for the order: " + str(self.order))
+        metadata = self._load_meta(self.order)
+
+        self.logger.debug("Metadata obtained, resumed as follows:")
+        self.logger.debug(metadata)
+        self.logger.debug('\n')
 
         short = self.down_a_level(metadata)
-        selection = self.select(short)
-        print('selection')
-        print(selection)
 
-        print('lets download')
+        self.logger.debug('Selecting best products available')
+        selection = self.select(short)
+        self.logger.debug(selection)
+
+        self.logger.debug('\n')
         self.get(selection)
